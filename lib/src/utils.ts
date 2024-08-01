@@ -16,7 +16,7 @@ export function normalizeString(text: string) {
 }
 
 export const wrapWithQuotesIfNeeded = (str: string) => {
-    if (/^[a-zA-Z]\w*$/.test(str)) {
+    if (/^[A-Za-z]\w*$/.test(str)) {
         return str;
     }
 
@@ -50,6 +50,20 @@ export const replaceHyphenatedPath = (path: string) => {
 
     matches.forEach((match) => {
         const replacement = pathParamToVariableName(match.replaceAll(matcherRegex, ":$1"));
+        path = path.replaceAll(match, replacement);
+    });
+    return path;
+};
+
+const recoverHyphenatedPathRegex = /:(\b\w+(?:-\w+)*\b)/g;
+export const recoverHyphenatedPath = (path: string) => {
+    const matches = path.match(recoverHyphenatedPathRegex);
+    if (matches === null) {
+        return path.replaceAll(recoverHyphenatedPathRegex, "{$1}");
+    }
+
+    matches.forEach((match) => {
+        const replacement = match.replaceAll(recoverHyphenatedPathRegex, "{$1}");
         path = path.replaceAll(match, replacement);
     });
     return path;

@@ -1,4 +1,4 @@
-import type { OpenAPIObject, OperationObject, PathItemObject, ReferenceObject, SchemaObject } from "openapi3-ts";
+import { isReferenceObject, type OpenAPIObject, type OperationObject, type PathItemObject, type ReferenceObject, type SchemaObject } from "openapi3-ts";
 import { sortBy, sortListFromRefArray, sortObjKeysFromArray } from "pastable/server";
 import { ts } from "tanu";
 import { match } from "ts-pattern";
@@ -10,7 +10,7 @@ import type { TsConversionContext } from "./openApiToTypescript";
 import { getTypescriptFromOpenApi } from "./openApiToTypescript";
 import { getZodSchema } from "./openApiToZod";
 import { topologicalSort } from "./topologicalSort";
-import { asComponentSchema, normalizeString } from "./utils";
+import { asComponentSchema, normalizeString, recoverHyphenatedPath } from "./utils";
 import type { CodeMetaData } from "./CodeMeta";
 
 const file = ts.createSourceFile("", "", ts.ScriptTarget.ESNext, true);
@@ -167,6 +167,88 @@ export const getZodClientTemplateContext = (
                         }
                     );
                 });
+
+                // fill missing types/schemas for each group
+                const visitedsRefs = {} as Record<string, boolean>;
+                const groupDependencies = new Set<string>();
+                const dfs = (schema: SchemaObject | ReferenceObject, fromRef = ""): void => {
+                    if (!schema) return;
+            
+                    if (isReferenceObject(schema)) {
+                        groupDependencies.add(schema.$ref);
+                        if (visitedsRefs[schema.$ref]) return;
+                        visitedsRefs[fromRef] = true;
+                        dfs(result.resolver.getSchemaByRef(schema.$ref), schema.$ref);
+                        return;
+                    }
+            
+                    if (schema.allOf) {
+                        for (const allOf of schema.allOf) {
+                            dfs(allOf, fromRef);
+                        }
+            
+                        return;
+                    }
+            
+                    if (schema.oneOf) {
+                        for (const oneOf of schema.oneOf) {
+                            dfs(oneOf, fromRef);
+                        }
+            
+                        return;
+                    }
+            
+                    if (schema.anyOf) {
+                        for (const anyOf of schema.anyOf) {
+                            dfs(anyOf, fromRef);
+                        }
+            
+                        return;
+                    }
+            
+                    if (schema.type === "array") {
+                        if (!schema.items) return;
+                        return void dfs(schema.items, fromRef);
+                    }
+            
+                    if (schema.type === "object" || schema.properties || schema.additionalProperties) {
+                        if (schema.properties) {
+                            for (const property in schema.properties) {
+                                dfs(schema.properties[property]!, fromRef);
+                            }
+                        }
+            
+                        if (schema.additionalProperties && typeof schema.additionalProperties === "object") {
+                            dfs(schema.additionalProperties, fromRef);
+                        }
+                    }
+                };
+
+                const endpoints = openApiDoc.paths[recoverHyphenatedPath(endpoint.path)];
+                for (const method in endpoints) {
+                    const endpoint = endpoints[method];
+                    const { responses } = endpoint;
+                    for (const statusCode in responses) {
+                        for (const mediaType in responses[statusCode].content) {
+                            const schema = responses[statusCode].content[mediaType].schema;
+                            dfs(schema);
+                            for (const dependency of groupDependencies) {
+                                const transitiveSchemaName = result.resolver.resolveRef(dependency).ref;
+                                const dependencyGraph = getOpenApiDependencyGraph([transitiveSchemaName], result.resolver.getSchemaByRef);
+                                const topo = topologicalSort(dependencyGraph.deepDependencyGraph);
+
+                                [dependency, ...topo].forEach((ref) => {
+                                    const schemaName = result.resolver.resolveRef(ref).normalized;
+                                    group.schemas[schemaName] = data.schemas[schemaName]!;
+                                    group.types[schemaName] = data.types[schemaName]!;
+                                });
+                            }
+                        }
+                    }
+                }
+
+                group.schemas = sortObjKeysFromArray(group.schemas, schemaOrderedByDependencies.map(ref => result.resolver.resolveRef(ref).normalized));
+                group.types = sortObjKeysFromArray(group.types, schemaOrderedByDependencies.map(ref => result.resolver.resolveRef(ref).normalized));
             }
         }
     });
@@ -208,6 +290,10 @@ export const getZodClientTemplateContext = (
         data.commonSchemaNames = new Set(
             sortListFromRefArray(Array.from(commonSchemaNames), getPureSchemaNames(schemaOrderedByDependencies))
         );
+    }
+
+    for (const name in result.zodSchemaByName) {
+        data.schemas[normalizeString(name)] = wrapWithLazyIfNeeded(name);
     }
 
     return data;

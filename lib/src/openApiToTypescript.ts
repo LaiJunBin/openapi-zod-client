@@ -154,7 +154,13 @@ TsConversionArgs): ts.Node | TypeDefinitionObject | string => {
 
         if (schema.allOf) {
             if (schema.allOf.length === 1) {
-                return getTypescriptFromOpenApi({ schema: schema.allOf[0]!, ctx, meta, options });
+                const type = getTypescriptFromOpenApi({
+                    schema: schema.allOf[0]!,
+                    ctx,
+                    meta,
+                    options,
+                }) as TypeDefinition;
+                return (schema.nullable ? t.union([type, t.reference("null")]) : type) as ts.Node;
             }
 
             const { patchRequiredSchemaInLoop, noRequiredOnlyAllof, composedRequiredSchema } =
@@ -333,7 +339,7 @@ type SingleType = Exclude<SchemaObject["type"], any[] | undefined>;
 const isPrimitiveType = (type: SingleType): type is PrimitiveType => primitiveTypeList.includes(type as any);
 
 const primitiveTypeList = ["string", "number", "integer", "boolean", "null"] as const;
-type PrimitiveType = (typeof primitiveTypeList)[number];
+type PrimitiveType = typeof primitiveTypeList[number];
 
 const wrapTypeIfInline = ({
     isInline,
